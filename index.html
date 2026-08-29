@@ -184,7 +184,6 @@
             }
         }
 
-
         /* ---------- THEME TOGGLE ---------- */
 
         .theme-toggle {
@@ -302,7 +301,7 @@
             </label>
         </div>
         <header class="card static">
-            <h1 id="page-title">WLCKG1 Raw Log Analyzer for zigbee2mqtt (Z2M)</h1>
+            <h1 id="page-title">WLCKG1 Raw Log Analyzer for zigbee2mqtt (Z2M)/ZHA</h1>
         </header>
 
         <details class="card" open>
@@ -318,7 +317,6 @@
                     <a href="zigbee2mqtt/external_converters/wyze-lock-ext.js" download="wyze-lock-ext.js"
                         aria-label="Download wyze-lock-ext.js">
                         zigbee2mqtt/external_converters/wyze-lock-ext.js
-
                     </a>
                 </p>
             </div>
@@ -380,19 +378,33 @@ external_converters:
         <br>
         <section>
             <details class="card" open>
-            <summary class="card-header">
-                <span class="chevron" aria-hidden="true"></span>
-                <h2 id="code-title">Code and issues</h2>
-            </summary>
-            <a href="https://github.com/JamesOsborn-SE/WLCKG1-z2m-config"> GitHub</a>
-        </details>
-
+                <summary class="card-header">
+                    <span class="chevron" aria-hidden="true"></span>
+                    <h2 id="code-title">Code and issues</h2>
+                </summary>
+                <a href="https://github.com/JamesOsborn-SE/WLCKG1-z2m-config"> GitHub</a>
+            </details>
         </section>
     </main>
 
     <script>
-        const SOURCE_OPTIONS = ["Door", "Manual", "Auto", "App", "Lock"];
-        const STATE_OPTIONS = ["Open", "Closed", "Locked", "Unlocked"];
+        const SOURCE_OPTIONS = [
+            "source_door", 
+            "source_manual", 
+            "source_auto", 
+            "source_app", 
+            "source_app2"
+        ];
+        const STATE_OPTIONS = [
+            "door_open", 
+            "door_closed", 
+            "lock_locked", 
+            "lock_moving", 
+            "lock_unlocked_open", 
+            "lock_unlocked", 
+            "lock_unlocked_unreliable"
+        ];
+
         function onStateChange(select) {
             const stateRaw = select.dataset.raw;
             const newState = select.value;
@@ -403,6 +415,7 @@ external_converters:
                     s.value = newState;
                 });
         }
+
         function onSourceChange(select) {
             const sourceRaw = select.dataset.raw;
             const newSource = select.value;
@@ -411,32 +424,9 @@ external_converters:
                 .querySelectorAll(`select[data-type="source"][data-raw="${sourceRaw}"]`)
                 .forEach(s => {
                     s.value = newSource;
-                    const row = s.closest("tr");
-                    validateRowState(row);
                 });
         }
-        function validateRowState(row) {
-            const sourceSelect = row.querySelector('select[data-type="source"]');
-            const stateSelect = row.querySelector('select[data-type="state"]');
 
-            if (!sourceSelect || !stateSelect) return;
-
-            const source = sourceSelect.value;
-
-            const allowedStates =
-                source === "Door"
-                    ? ["Open", "Closed"]
-                    : ["Locked", "Unlocked"];
-
-            [...stateSelect.options].forEach(opt => {
-                if (opt.value === "") return;
-                opt.disabled = !allowedStates.includes(opt.value);
-            });
-
-            if (stateSelect.value && !allowedStates.includes(stateSelect.value)) {
-                stateSelect.value = "--";
-            }
-        }
         function createSelect(options, type, rawValue) {
             const select = document.createElement("select");
             select.dataset.type = type;
@@ -465,7 +455,8 @@ external_converters:
 
             return select;
         }
-        logText = document.getElementById("logs")
+
+        const logText = document.getElementById("logs");
         logText.addEventListener("change", function (event) {
             const text = logText.value;
             const lines = text.split(/\r?\n/);
@@ -501,9 +492,9 @@ external_converters:
                 const row = document.createElement("tr");
 
                 row.innerHTML = `
-            <td>${tsMatch[1]}</td>
-            <td>${len}</td>
-        `;
+                    <td>${tsMatch[1]}</td>
+                    <td>${len}</td>
+                `;
 
                 const sourceCell = document.createElement("td");
                 sourceCell.appendChild(createSelect(SOURCE_OPTIONS, "source", eventSource));
@@ -519,24 +510,25 @@ external_converters:
 
         function updateOutput() {
             const mappings = {
-                "Source Door": null,
-                "Source Manual": null,
-                "Source Auto": null,
-                "Source App": null,
-                "Door Open": null,
-                "Door Closed": null,
-                "Lock Locked": null,
-                "Lock Unlocked": null
+                "source_door": null,
+                "source_manual": null,
+                "source_auto": null,
+                "source_app": null,
+                "source_app2": null,
+                "door_open": null,
+                "door_closed": null,
+                "lock_locked": null,
+                "lock_moving": null,
+                "lock_unlocked_open": null,
+                "lock_unlocked": null,
+                "lock_unlocked_unreliable": null
             };
 
             document.querySelectorAll("select").forEach(select => {
                 if (!select.value) return;
 
                 const raw = select.dataset.raw;
-                const label =
-                    select.dataset.type === "source"
-                        ? `Source ${select.value}`
-                        : `${select.value.includes("Open") || select.value.includes("Closed") ? "Door" : "Lock"} ${select.value}`;
+                const label = select.value;
 
                 if (mappings[label] === null) {
                     mappings[label] = raw;
@@ -554,11 +546,12 @@ external_converters:
                 : "";
 
             const output = Object.entries(mappings)
-                .map(([k, v]) => `${k}: ${v}`)
+                .map(([k, v]) => `${k}: ${v !== null ? v : 'null'}`)
                 .join("\n");
 
             document.getElementById("output").textContent = output;
-        };
+        }
+        
         updateOutput();
     </script>
 
