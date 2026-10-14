@@ -11,7 +11,8 @@ Changes from upstream:
 - Do not guess door position from bolt state, or treat movement as confirmed locking.
 - Ignore non-85-byte frames and missing/conflicting mappings.
 - Remove speculative sequence/time filtering and global Zigbee cluster patching.
-- Do not consume standard lock-state reports, which may be inaccurate on this device.
+- Preserve standard lock-state/operation reporting during calibration. Those reports
+  can be inaccurate; they are not sufficient evidence for enabling auto-lock.
 - Add `wyze_debug` diagnostics: frame length and candidate bytes only, not full payloads.
 
 ### Install (Zigbee2MQTT 2.6.3)

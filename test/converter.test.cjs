@@ -10,7 +10,12 @@ const sandbox = {module: {exports: {}}, require: (name) => {
     return {};
 }};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../zigbee2mqtt/external_converters/wyze-lock-ext.js'), 'utf8'), sandbox);
-const convert = sandbox.module.exports.fromZigbee[1].convert;
+const eventConverter = sandbox.module.exports.fromZigbee.find((converter) => converter?.cluster === 'manuSpecificAssaDoorLock');
+const convert = eventConverter.convert;
+test('matches the cluster name dispatched by Z2M 2.6.3', () => {
+    assert.equal(eventConverter.cluster, 'manuSpecificAssaDoorLock');
+    assert.deepEqual(Array.from(eventConverter.type), ['raw']);
+});
 const options = {source_door: 10, source_manual: 11, door_open: 1, door_closed: 2, lock_locked: 3, lock_unlocked: 4};
 function decode(source, state, opts = options, length = 85) {
     const data = Buffer.alloc(length);

@@ -13,7 +13,8 @@ const byte = (v) => Number.isInteger(v) && v >= 0 && v <= 255;
 const matches = (options, name, value) => byte(options[name]) && options[name] === value;
 
 const wyzeEvent = {
-    cluster: 64512,
+    // Z2M 2.6.3 dispatches this registered cluster by name, not numeric ID.
+    cluster: 'manuSpecificAssaDoorLock',
     type: ['raw'],
     convert: (model, msg, publish, options = {}) => {
         const data = msg.data;
@@ -75,9 +76,9 @@ module.exports = {
     model: 'WLCKG1',
     vendor: 'Wyze',
     description: 'Wyze Lock (experimental, measured event mappings required)',
-    // Standard lockState reports may be inaccurate on this device; only use
-    // explicitly mapped proprietary events for lock status. Commands remain standard.
-    fromZigbee: [fz.battery, wyzeEvent],
+    // Preserve standard command/status behavior during calibration. These reports
+    // are not sufficient evidence for safe auto-lock; validate physical transitions.
+    fromZigbee: [fz.lock, fz.lock_operation_event, fz.battery, wyzeEvent],
     toZigbee: [tz.lock],
     configure: async (device, coordinatorEndpoint) => {
         const endpoint = device.endpoints[0];
