@@ -9,6 +9,7 @@ const e = exposes.presets;
 const NS = 'zhc:wyze-lock';
 const recentDoorFrames = new Map();
 const DOOR_DUPLICATE_WINDOW_MS = 2000;
+const DOOR_ORDER_WINDOW_MS = 10000;
 const byte = (value) => Number.isInteger(value) && value >= 0 && value <= 255;
 
 const doorEvents = {
@@ -26,17 +27,22 @@ const doorEvents = {
         const open = byte(options.door_open) && data[46] === options.door_open;
         const closed = byte(options.door_closed) && data[46] === options.door_closed;
         if (open === closed) return;
-        // The counter is shared with non-door messages and wraps. Comparing
-        // sparse door counters can reject valid events indefinitely. Suppress
-        // only an identical consecutive frame received within a short window.
-        // This is duplicate suppression, not proof of chronological ordering.
+        // The shared counter wraps. Compare only within ten seconds of the
+        // last ACCEPTED door event; rejected frames must not extend that window.
+        // This assumes fewer than 128 increments and no reset during the window.
+        // After a longer gap (or wall-clock rollback), establish a fresh baseline.
         const id = `${msg.device.ieeeAddr}:${msg.endpoint.ID}`;
         const signature = Array.from(data).join(',');
         const now = Date.now();
         const last = recentDoorFrames.get(id);
         if (last && last.signature === signature && now >= last.receivedAt &&
             now - last.receivedAt <= DOOR_DUPLICATE_WINDOW_MS) return;
-        recentDoorFrames.set(id, {signature, receivedAt: now});
+        if (last && now >= last.receivedAt && now - last.receivedAt < DOOR_ORDER_WINDOW_MS) {
+            const distance = (data[3] - last.sequence + 256) % 256;
+            // Same counter is ambiguous; 128..255 is ambiguous or older.
+            if (distance === 0 || distance >= 128) return;
+        }
+        recentDoorFrames.set(id, {signature, sequence: data[3], receivedAt: now});
         return {door_state: open ? 'open' : 'closed', contact: closed};
     },
 };

@@ -50,25 +50,49 @@ test('manual operations and heartbeat frames do not change door position', () =>
     assert.equal(decode(210, 3, 80, options, 123), undefined);
     assert.equal(decode(210, 3, 80, options, 60), undefined);
 });
-test('sparse door events cannot be rejected as stale after shared counter wraps', () => {
+test('sparse events establish a fresh baseline after exactly ten seconds', () => {
     assert.ok(decode(210, 3, 120, options, 85, 'sparse'));
-    // Other messages consume counter values. The next door event may have any
-    // counter, including a slightly lower number or the same number.
+    now += 10000;
     assert.deepEqual(decode(210, 0, 90, options, 85, 'sparse'), {door_state: 'open', contact: false});
-    assert.deepEqual(decode(210, 3, 91, options, 85, 'sparse'), {door_state: 'closed', contact: true});
-    assert.ok(decode(210, 0, 91, options, 85, 'sparse'));
-    assert.ok(decode(210, 3, 255, options, 85, 'sparse'));
-    assert.ok(decode(210, 0, 0, options, 85, 'sparse'));
+    now += 600000;
+    assert.ok(decode(210, 3, 90, options, 85, 'sparse'));
 });
-test('only identical consecutive frames within two seconds are suppressed', () => {
+test('out-of-order frames are rejected without extending the ten-second window', () => {
+    assert.ok(decode(210, 3, 102, options, 85, 'ordering'));
+    now += 1000;
+    assert.equal(decode(210, 0, 101, options, 85, 'ordering'), undefined);
+    now += 8999;
+    assert.equal(decode(210, 0, 101, options, 85, 'ordering'), undefined);
+    now += 1;
+    assert.ok(decode(210, 0, 101, options, 85, 'ordering'));
+});
+test('wraparound accepts 255 to 0 and rejects delayed 255 after 0', () => {
+    assert.ok(decode(210, 3, 255, options, 85, 'wrap'));
+    now += 1;
+    assert.ok(decode(210, 0, 0, options, 85, 'wrap'));
+    assert.equal(decode(210, 3, 255, options, 85, 'wrap'), undefined);
+});
+test('forward distances 1..127 accepted; same counter and distance 128 rejected', () => {
+    assert.ok(decode(210, 0, 0, options, 85, 'distance'));
+    assert.equal(decode(210, 3, 0, options, 85, 'distance'), undefined);
+    assert.equal(decode(210, 3, 128, options, 85, 'distance'), undefined);
+    assert.ok(decode(210, 3, 127, options, 85, 'distance'));
+    assert.ok(decode(210, 0, 128, options, 85, 'distance'));
+});
+test('duplicates and same counters expire; device histories are independent', () => {
     assert.ok(decode(210, 0, 89, options, 85, 'duplicates'));
     now += 1000;
     assert.equal(decode(210, 0, 89, options, 85, 'duplicates'), undefined);
     now += 1001;
-    assert.ok(decode(210, 0, 89, options, 85, 'duplicates'));
-    assert.ok(decode(210, 3, 89, options, 85, 'duplicates'));
-    assert.ok(decode(210, 0, 89, options, 85, 'duplicates'));
+    assert.equal(decode(210, 0, 89, options, 85, 'duplicates'), undefined);
     assert.ok(decode(210, 0, 89, options, 85, 'another-device'));
+    now += 7999;
+    assert.ok(decode(210, 0, 89, options, 85, 'duplicates'));
+});
+test('wall clock moving backwards establishes a fresh baseline instead of freezing', () => {
+    assert.ok(decode(210, 3, 120, options, 85, 'clock'));
+    now -= 1000;
+    assert.ok(decode(210, 0, 90, options, 85, 'clock'));
 });
 test('no additional standard lock response/report subscriptions', () => {
     assert.deepEqual(Array.from(door.type), ['raw']);
