@@ -4,50 +4,72 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const chain = new Proxy(() => chain, {get: () => chain});
+const commandCalls = [];
+const nativeRaw = {cluster: 64512, type: ['raw'], convert() {}};
+const nativeCommands = {key: ['state'], async convertSet(...args) {commandCalls.push(args);}, async convertGet() {}};
+const native = {model: 'WLCKG1', fromZigbee: [nativeRaw], toZigbee: [nativeCommands], exposes: [], configure() {}};
 const sandbox = {module: {exports: {}}, require: (name) => {
+    if (name.endsWith('/devices/wyze')) return {definitions: [native]};
     if (name.endsWith('/exposes')) return {presets: chain, access: {SET: 2, STATE: 1}, enum: chain, numeric: chain, binary: chain};
     if (name.endsWith('/logger')) return {logger: {info() {}}};
-    return {};
+    throw new Error(name);
 }};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../zigbee2mqtt/external_converters/wyze-lock-ext.js'), 'utf8'), sandbox);
-const eventConverter = sandbox.module.exports.fromZigbee.find((converter) => converter?.cluster === 'manuSpecificAssaDoorLock');
-const convert = eventConverter.convert;
-test('matches the cluster name dispatched by Z2M 2.6.3', () => {
-    assert.equal(eventConverter.cluster, 'manuSpecificAssaDoorLock');
-    assert.deepEqual(Array.from(eventConverter.type), ['raw']);
-});
-const options = {source_door: 10, source_manual: 11, door_open: 1, door_closed: 2, lock_locked: 3, lock_unlocked: 4};
-function decode(source, state, opts = options, length = 85) {
+const definition = sandbox.module.exports;
+const door = definition.fromZigbee[1];
+const read = definition.fromZigbee[2];
+const command = definition.toZigbee[0];
+const options = {source_door: 210, door_open: 0, door_closed: 3};
+const plain = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+function decode(source, state, seq, opts = options, length = 85, id = 'door-test') {
     const data = Buffer.alloc(length);
-    data[46] = state; data[57] = source;
-    const result = convert(null, {data, device: {ieeeAddr: 'test'}}, null, opts);
-    return result === undefined ? undefined : JSON.parse(JSON.stringify(result));
+    data[3] = seq; data[46] = state; data[57] = source;
+    return plain(door.convert(null, {data, device: {ieeeAddr: id}, endpoint: {ID: 1}}, null, opts));
 }
-test('unconfigured events do not publish guessed states', () => {
-    assert.equal(decode(0, 0, {}), undefined);
-    assert.equal(decode(10, 2, {source_door: 10}), undefined);
+test('inherits native lock decoding, configuration and get without modification', () => {
+    assert.equal(definition.fromZigbee[0], nativeRaw);
+    assert.equal(definition.configure, native.configure);
+    assert.equal(command.convertGet, nativeCommands.convertGet);
+    assert.equal(door.cluster, 64512);
 });
-test('door transitions are explicit and independent of bolt state', () => {
-    assert.deepEqual(decode(10, 1), {door_state: 'open', contact: false});
-    assert.deepEqual(decode(10, 2), {door_state: 'closed', contact: true});
-    assert.equal(decode(10, 3), undefined);
+test('measured open and closed events do not invent bolt status', () => {
+    assert.deepEqual(decode(210, 0, 76), {door_state: 'open', contact: false});
+    assert.deepEqual(decode(210, 3, 77), {door_state: 'closed', contact: true});
 });
-test('lock transitions do not invent door position', () => {
-    assert.deepEqual(decode(11, 3), {state: 'LOCK', lock_state: 'locked', action: 'manual'});
-    assert.deepEqual(decode(11, 4), {state: 'UNLOCK', lock_state: 'unlocked', action: 'manual'});
-    assert.equal(decode(11, 5), undefined);
+test('missing, conflicting and unknown mappings are ignored', () => {
+    assert.equal(decode(210, 0, 80, {}), undefined);
+    assert.equal(decode(210, 0, 80, {...options, door_closed: 0}), undefined);
+    assert.equal(decode(210, 0, 80, {...options, door_open: '0'}), undefined);
+    assert.equal(decode(210, 19, 80), undefined);
 });
-test('heartbeat, short frames and unknown sources are ignored', () => {
-    assert.equal(decode(10, 2, options, 123), undefined);
-    assert.equal(decode(10, 2, options, 60), undefined);
-    assert.equal(decode(99, 2), undefined);
+test('manual operations and heartbeat frames do not change door position', () => {
+    assert.equal(decode(40, 19, 80), undefined);
+    assert.equal(decode(210, 3, 80, options, 123), undefined);
+    assert.equal(decode(210, 3, 80, options, 60), undefined);
 });
-test('ambiguous or invalid mappings do not publish', () => {
-    assert.equal(decode(10, 2, {...options, door_open: 2}), undefined);
-    assert.equal(decode(11, 3, {...options, lock_unlocked: 3}), undefined);
-    assert.equal(decode(11, 3, {...options, source_auto: 11}), undefined);
-    assert.equal(decode(10, 2, {...options, door_closed: '2'}), undefined);
+test('duplicate and delayed door frames are ignored; counter wraps', () => {
+    assert.ok(decode(210, 0, 250, options, 85, 'sequence'));
+    assert.equal(decode(210, 3, 250, options, 85, 'sequence'), undefined);
+    assert.equal(decode(210, 3, 249, options, 85, 'sequence'), undefined);
+    assert.ok(decode(210, 3, 1, options, 85, 'sequence'));
 });
-test('upstream unreliable-unlocked option uses the declared name', () => {
-    assert.equal(decode(11, 5, {...options, lock_unlocked_unreliable: 5}).state, 'UNLOCK');
+test('only explicit status reads are subscribed, not hourly reports or command acknowledgements', () => {
+    assert.deepEqual(Array.from(read.type), ['readResponse']);
+    assert.deepEqual(plain(read.convert(null, {data: {lockState: 1}})), {state: 'LOCK', lock_state: 'locked'});
+    assert.deepEqual(plain(read.convert(null, {data: {lockState: 2}})), {state: 'UNLOCK', lock_state: 'unlocked'});
+    assert.equal(read.convert(null, {data: {lockState: 99}}), undefined);
+});
+test('command publishes actual readback rather than requested position', async () => {
+    let queried = false;
+    const result = await command.convertSet({read: async (cluster, attrs) => {
+        queried = true; assert.equal(cluster, 'closuresDoorLock');
+        assert.deepEqual(Array.from(attrs), ['lockState']); return {lockState: 2};
+    }}, 'state', 'LOCK', {});
+    assert.equal(queried, true);
+    assert.equal(commandCalls.length, 1);
+    assert.deepEqual(plain(result), {state: {state: 'UNLOCK', lock_state: 'unlocked'}});
+});
+test('read failure/unknown position never produces optimistic success', async () => {
+    await assert.rejects(command.convertSet({read: async () => {throw new Error('timeout');}}, 'state', 'LOCK', {}), /timeout/);
+    await assert.rejects(command.convertSet({read: async () => ({lockState: 255})}, 'state', 'LOCK', {}), /unknown/);
 });
