@@ -10,12 +10,6 @@ const NS = 'zhc:wyze-lock';
 const doorSequences = new Map();
 const byte = (value) => Number.isInteger(value) && value >= 0 && value <= 255;
 
-function readState(data) {
-    const states = {0: 'not_fully_locked', 1: 'locked', 2: 'unlocked'};
-    if (!Object.prototype.hasOwnProperty.call(states, data?.lockState)) return;
-    return {state: data.lockState === 1 ? 'LOCK' : 'UNLOCK', lock_state: states[data.lockState]};
-}
-
 const doorEvents = {
     cluster: 64512,
     type: ['raw'],
@@ -41,33 +35,32 @@ const doorEvents = {
     },
 };
 
-const requestedState = {
-    cluster: 'closuresDoorLock',
-    // Deliberately exclude attributeReport: upstream documents false hourly
-    // "locked" reports. An explicit query is a separate, observed working path.
-    type: ['readResponse'],
-    convert: (model, msg) => readState(msg.data),
-};
-
 const nativeLockCommands = native.toZigbee.find((converter) => converter.key.includes('state'));
 if (!nativeLockCommands) throw new Error('Native lock command converter not found');
 const verifiedLockCommands = {
     ...nativeLockCommands,
     convertSet: async (entity, key, value, meta) => {
-        // Native implementation validates input and awaits command success.
-        // Do not publish the requested state as if it were confirmed position.
+        // Preserve native command validation and delivery failures. Never retry
+        // movement merely because the subsequent status query failed.
         await nativeLockCommands.convertSet(entity, key, value, meta);
-        const actual = await entity.read('closuresDoorLock', ['lockState']);
-        const state = readState(actual);
-        if (state) return {state};
-        throw new Error('Lock command completed, but state readback was unknown');
+        try {
+            const actual = await entity.read('closuresDoorLock', ['lockState']);
+            // Not fully locked is not confirmation of either locked or unlocked.
+            if (actual?.lockState === 1) return {state: {state: 'LOCK', lock_state: 'locked'}};
+            if (actual?.lockState === 2) return {state: {state: 'UNLOCK', lock_state: 'unlocked'}};
+            logger.warning('Lock command completed, but readback did not confirm locked/unlocked; displayed state may be stale', NS);
+        } catch (error) {
+            logger.warning(`Lock command completed, but status query failed; displayed state may be stale: ${error.message}`, NS);
+        }
+        // No optimistic position and no automatic command retry.
     },
 };
 
 module.exports = {
     ...native,
     description: 'Wyze Lock (native decoder + measured door events + command readback)',
-    fromZigbee: [...native.fromZigbee, doorEvents, requestedState],
+    fromZigbee: [...native.fromZigbee, doorEvents],
+    // Only the awaited command query is trusted; no standard report subscription.
     toZigbee: native.toZigbee.map((converter) => converter === nativeLockCommands ? verifiedLockCommands : converter),
     exposes: [
         ...native.exposes,

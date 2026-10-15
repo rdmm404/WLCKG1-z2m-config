@@ -5,19 +5,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const chain = new Proxy(() => chain, {get: () => chain});
 const commandCalls = [];
+const warnings = [];
 const nativeRaw = {cluster: 64512, type: ['raw'], convert() {}};
 const nativeCommands = {key: ['state'], async convertSet(...args) {commandCalls.push(args);}, async convertGet() {}};
 const native = {model: 'WLCKG1', fromZigbee: [nativeRaw], toZigbee: [nativeCommands], exposes: [], configure() {}};
 const sandbox = {module: {exports: {}}, require: (name) => {
     if (name.endsWith('/devices/wyze')) return {definitions: [native]};
     if (name.endsWith('/exposes')) return {presets: chain, access: {SET: 2, STATE: 1}, enum: chain, numeric: chain, binary: chain};
-    if (name.endsWith('/logger')) return {logger: {info() {}}};
+    if (name.endsWith('/logger')) return {logger: {info() {}, warning(message) {warnings.push(message);}}};
     throw new Error(name);
 }};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../zigbee2mqtt/external_converters/wyze-lock-ext.js'), 'utf8'), sandbox);
 const definition = sandbox.module.exports;
 const door = definition.fromZigbee[1];
-const read = definition.fromZigbee[2];
 const command = definition.toZigbee[0];
 const options = {source_door: 210, door_open: 0, door_closed: 3};
 const plain = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -29,7 +29,9 @@ function decode(source, state, seq, opts = options, length = 85, id = 'door-test
 test('inherits native lock decoding, configuration and get without modification', () => {
     assert.equal(definition.fromZigbee[0], nativeRaw);
     assert.equal(definition.configure, native.configure);
+    assert.equal(command.key, nativeCommands.key);
     assert.equal(command.convertGet, nativeCommands.convertGet);
+    assert.equal(definition.fromZigbee.length, native.fromZigbee.length + 1);
     assert.equal(door.cluster, 64512);
 });
 test('measured open and closed events do not invent bolt status', () => {
@@ -53,23 +55,46 @@ test('duplicate and delayed door frames are ignored; counter wraps', () => {
     assert.equal(decode(210, 3, 249, options, 85, 'sequence'), undefined);
     assert.ok(decode(210, 3, 1, options, 85, 'sequence'));
 });
-test('only explicit status reads are subscribed, not hourly reports or command acknowledgements', () => {
-    assert.deepEqual(Array.from(read.type), ['readResponse']);
-    assert.deepEqual(plain(read.convert(null, {data: {lockState: 1}})), {state: 'LOCK', lock_state: 'locked'});
-    assert.deepEqual(plain(read.convert(null, {data: {lockState: 2}})), {state: 'UNLOCK', lock_state: 'unlocked'});
-    assert.equal(read.convert(null, {data: {lockState: 99}}), undefined);
+test('no additional standard lock response/report subscriptions', () => {
+    assert.deepEqual(Array.from(door.type), ['raw']);
+    assert.equal(definition.fromZigbee[0], nativeRaw);
+    assert.equal(definition.fromZigbee.length, 2);
 });
-test('command publishes actual readback rather than requested position', async () => {
-    let queried = false;
-    const result = await command.convertSet({read: async (cluster, attrs) => {
-        queried = true; assert.equal(cluster, 'closuresDoorLock');
-        assert.deepEqual(Array.from(attrs), ['lockState']); return {lockState: 2};
-    }}, 'state', 'LOCK', {});
-    assert.equal(queried, true);
-    assert.equal(commandCalls.length, 1);
-    assert.deepEqual(plain(result), {state: {state: 'UNLOCK', lock_state: 'unlocked'}});
+test('command delegates to native then publishes actual readback, not requested state', async () => {
+    const before = commandCalls.length;
+    let reads = 0;
+    const entity = {read: async (cluster, attrs) => {
+        reads++;
+        assert.equal(commandCalls.length, before + 1);
+        assert.equal(cluster, 'closuresDoorLock');
+        assert.deepEqual(Array.from(attrs), ['lockState']);
+        return {lockState: 2};
+    }};
+    const meta = {};
+    assert.deepEqual(plain(await command.convertSet(entity, 'state', 'LOCK', meta)),
+        {state: {state: 'UNLOCK', lock_state: 'unlocked'}});
+    assert.equal(reads, 1);
+    assert.deepEqual(commandCalls[before], [entity, 'state', 'LOCK', meta]);
+    assert.deepEqual(plain(await command.convertSet({read: async () => ({lockState: 1})}, 'state', 'LOCK', {})),
+        {state: {state: 'LOCK', lock_state: 'locked'}});
 });
-test('read failure/unknown position never produces optimistic success', async () => {
-    await assert.rejects(command.convertSet({read: async () => {throw new Error('timeout');}}, 'state', 'LOCK', {}), /timeout/);
-    await assert.rejects(command.convertSet({read: async () => ({lockState: 255})}, 'state', 'LOCK', {}), /unknown/);
+test('read failure or ambiguous state warns without failing or retrying movement', async () => {
+    for (const read of [async () => {throw Error('timeout');}, ...[0, 255, undefined].map(lockState => async () => ({lockState}))]) {
+        const before = commandCalls.length;
+        const warned = warnings.length;
+        assert.equal(await command.convertSet({read}, 'state', 'LOCK', {}), undefined);
+        assert.equal(commandCalls.length, before + 1);
+        assert.equal(warnings.length, warned + 1);
+    }
+});
+test('native delivery failure propagates without a read or retry', async () => {
+    const original = nativeCommands.convertSet;
+    let calls = 0;
+    nativeCommands.convertSet = async () => {calls++; throw Error('NWK_NO_ROUTE');};
+    try {
+        await assert.rejects(command.convertSet({read: async () => assert.fail('must not read after failed command')}, 'state', 'LOCK', {}), /NWK_NO_ROUTE/);
+        assert.equal(calls, 1);
+    } finally {
+        nativeCommands.convertSet = original;
+    }
 });
