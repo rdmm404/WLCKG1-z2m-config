@@ -7,7 +7,8 @@ const native = definitions.find((definition) => definition.model === 'WLCKG1');
 if (!native) throw new Error('Native WLCKG1 definition not found');
 const e = exposes.presets;
 const NS = 'zhc:wyze-lock';
-const doorSequences = new Map();
+const recentDoorFrames = new Map();
+const DOOR_DUPLICATE_WINDOW_MS = 2000;
 const byte = (value) => Number.isInteger(value) && value >= 0 && value <= 255;
 
 const doorEvents = {
@@ -25,12 +26,17 @@ const doorEvents = {
         const open = byte(options.door_open) && data[46] === options.door_open;
         const closed = byte(options.door_closed) && data[46] === options.door_closed;
         if (open === closed) return;
-        // Match native Wyze duplicate/out-of-order suppression, independently.
+        // The counter is shared with non-door messages and wraps. Comparing
+        // sparse door counters can reject valid events indefinitely. Suppress
+        // only an identical consecutive frame received within a short window.
+        // This is duplicate suppression, not proof of chronological ordering.
         const id = `${msg.device.ieeeAddr}:${msg.endpoint.ID}`;
-        const seq = data[3];
-        const last = doorSequences.get(id);
-        if (last !== undefined && seq <= last && last - seq < 50) return;
-        doorSequences.set(id, seq);
+        const signature = Array.from(data).join(',');
+        const now = Date.now();
+        const last = recentDoorFrames.get(id);
+        if (last && last.signature === signature && now >= last.receivedAt &&
+            now - last.receivedAt <= DOOR_DUPLICATE_WINDOW_MS) return;
+        recentDoorFrames.set(id, {signature, receivedAt: now});
         return {door_state: open ? 'open' : 'closed', contact: closed};
     },
 };

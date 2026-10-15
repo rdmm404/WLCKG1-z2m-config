@@ -13,6 +13,8 @@ Targets **Zigbee2MQTT 2.14.2 / zigbee-herdsman-converters 26.115.1**.
   lock-state decoder, including its duplicate/out-of-order filtering.
 - Adds door position from measured 85-byte proprietary frames: source at byte 57,
   state at byte 46. Does not infer door position from bolt position.
+- Door decoding suppresses only identical consecutive frames within two seconds.
+  It does not infer event order from the wrapping counter shared by all messages.
 - Delegates commands to native Z2M, then queries lockState once after completion.
   Publishes only a confirmed locked/unlocked readback, never the requested state.
 - A failed/ambiguous readback logs a warning without claiming movement failed or
@@ -61,9 +63,10 @@ with mocks do not prove real-world reliability. Physical command, thumb-turn,
 open/closed/ajar, delayed-event and restart tests are required before automations.
 
 Door position is **the last reported event**, not a live query. It may be stale
-if an event is missed, including while Z2M is offline. The inherited sequence
-filter is a heuristic, not a protocol guarantee; resets and delayed messages need
-physical testing. Command-readback accuracy still requires physical validation.
+if an event is missed, including while Z2M is offline. Door frames are accepted
+in arrival order; a delayed frame can still temporarily publish an old position.
+The native bolt decoder's sequence heuristic is unchanged. Physical testing of
+resets, delayed messages and command-readback accuracy is still required.
 A successful command or read does not prove the door is physically secured.
 Keep automatic locking disabled during validation.
 
